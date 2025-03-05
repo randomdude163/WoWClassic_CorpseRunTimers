@@ -1,0 +1,415 @@
+local knownPlayers = {}
+local activeTimers = {}
+local timerBarHeight = 15
+local timerBarWidth = 190
+local maxBars = 5
+local barSpacing = 2
+
+local timerAnchor = nil -- Will store the main anchor frame for all timer bars
+
+
+local function ConvertMapCoordsToYards(zoneText, x, y)
+    local zone = ZoneData[zoneText]
+    if not zone then return nil end
+    local yardsX = (x / 100) * zone.width
+    local yardsY = (y / 100) * zone.height
+    return yardsX, yardsY
+end
+
+local function CalculateYardDistanceBetweenCoordinates(zoneText, x1, y1, x2, y2)
+    local yards1X, yards1Y = ConvertMapCoordsToYards(zoneText, x1, y1)
+    local yards2X, yards2Y = ConvertMapCoordsToYards(zoneText, x2, y2)
+    if not yards1X or not yards2X then return nil end
+    return math.sqrt((yards2X - yards1X) ^ 2 + (yards2Y - yards1Y) ^ 2)
+end
+
+local function IsPointInPolygon(point, polygon)
+    local inside = false
+    local j = #polygon
+
+    for i = 1, #polygon do
+        if ((polygon[i].y > point.y) ~= (polygon[j].y > point.y)) and
+            (point.x < (polygon[j].x - polygon[i].x) * (point.y - polygon[i].y) /
+                (polygon[j].y - polygon[i].y) + polygon[i].x) then
+            inside = not inside
+        end
+        j = i
+    end
+
+    return inside
+end
+
+local function GetPathForLocation(zoneText, x, y)
+    local zone = WaypointPathData[zoneText]
+    if not zone then return nil end
+
+    local point = { x = x, y = y }
+    for _, area in ipairs(zone.areasThatRequireWaypointPath) do
+        if IsPointInPolygon(point, area.polygon) then
+            return area.path
+        end
+    end
+    return nil
+end
+
+local function CalculatePathDistance(zoneText, startX, startY, endX, endY)
+    local path = GetPathForLocation(zoneText, startX, startY)
+    if not path then
+        return CalculateYardDistanceBetweenCoordinates(zoneText, startX, startY, endX, endY)
+    end
+
+    local totalDistance = 0
+    local lastX, lastY = endX, endY -- Start at graveyard coordinates
+
+    -- First waypoint is path to restricted area
+    for _, wp in ipairs(path) do
+        totalDistance = totalDistance + CalculateYardDistanceBetweenCoordinates(zoneText, lastX, lastY, wp.x, wp.y)
+        lastX, lastY = wp.x, wp.y
+    end
+
+    -- Add final distance from last waypoint to death location
+    totalDistance = totalDistance + CalculateYardDistanceBetweenCoordinates(zoneText, lastX, lastY, startX, startY)
+    return totalDistance
+end
+
+local function GetDistanceToNearestGraveyard(zoneText, deathX, deathY)
+    local zone = ZoneData[zoneText]
+    if not zone then return nil end
+
+    local nearestDist = math.huge
+
+    for _, gy in ipairs(zone.graveyards) do
+        local dist = CalculatePathDistance(zoneText, deathX, deathY, gy.x, gy.y)
+        if dist and dist < nearestDist then
+            nearestDist = dist
+        end
+    end
+
+    return nearestDist
+end
+
+local function CalculateReturnTime(distance, isNightElf)
+    local effectiveDistance = math.max(0, distance - CORPSE_RESURRECTION_RANGE)
+    local speedModifier = isNightElf and WISP_SPIRIT_MODIFIER or GHOST_SPEED_MODIFIER
+    local returnTime = math.ceil(effectiveDistance / (BASE_RUNNING_SPEED * speedModifier))
+    local delayForReleasingSpirit = 1.5  -- seconds
+    return returnTime + delayForReleasingSpirit
+end
+
+local function CreateTimerAnchor()
+    if timerAnchor then return end
+
+    timerAnchor = CreateFrame("Frame", "CorpseRunTimersBarsAnchor", UIParent)
+    timerAnchor:SetSize(200, 20)
+    timerAnchor:SetPoint("TOP", UIParent, "TOP", 0, -200)
+    timerAnchor:EnableMouse(true)
+    timerAnchor:SetMovable(true)
+    timerAnchor:RegisterForDrag("LeftButton")
+
+    -- Add a background to make it visible while moving
+    local bg = timerAnchor:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(true)
+    bg:SetColorTexture(0.2, 0.2, 0.2, 0.5)
+    timerAnchor.bg = bg
+
+    -- Single set of drag handlers
+    timerAnchor:SetScript("OnDragStart", function(self)
+        if IsShiftKeyDown() then
+            self.bg:Show()
+            self:StartMoving()
+        end
+    end)
+
+    timerAnchor:SetScript("OnDragStop", function(self)
+        self.bg:Hide()
+        self:StopMovingOrSizing()
+    end)
+
+    bg:Hide()
+end
+
+local function UpdateTimerBarPositions()
+    local index = 0
+    for _, timer in pairs(activeTimers) do
+        timer.frame:ClearAllPoints()
+        timer.frame:SetPoint("TOP", timerAnchor, "BOTTOM", 0, -(index * (timerBarHeight + barSpacing)))
+        index = index + 1
+    end
+end
+
+local function CreateTimerBar(playerName, duration, level, class, shouldPause)
+    if not timerAnchor then
+        CreateTimerAnchor()
+    end
+
+    -- If timer already exists, update its duration and pause state
+    if activeTimers[playerName] then
+        local timer = activeTimers[playerName]
+        timer.duration = duration
+        timer.startTime = GetTime()
+        timer.paused = shouldPause
+        timer.bar:SetMinMaxValues(0, duration)
+        timer.bar:SetValue(duration)
+        return timer
+    end
+
+    local frame = CreateFrame("Frame", nil, timerAnchor)
+    frame:SetSize(timerBarWidth, timerBarHeight)
+
+    local bar = CreateFrame("StatusBar", nil, frame)
+    bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+
+    local color = CLASS_COLORS[class] or { r = 1, g = 0, b = 0 }
+    bar:SetStatusBarColor(color.r, color.g, color.b)
+    bar:SetAllPoints(true)
+    bar:SetMinMaxValues(0, duration)
+    bar:SetValue(duration)
+
+    local bg = bar:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(true)
+    bg:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+    bg:SetVertexColor(color.r * 0.2, color.g * 0.2, color.b * 0.2, 0.8)
+
+    local text = bar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    text:SetPoint("CENTER")
+
+    local timer = {
+        frame = frame,
+        bar = bar,
+        text = text,
+        duration = duration,
+        remaining = duration,
+        playerName = playerName,
+        level = level,
+        class = class,
+        startTime = GetTime(),
+        paused = shouldPause
+    }
+    activeTimers[playerName] = timer
+
+    UpdateTimerBarPositions()
+    return timer
+end
+
+local function UpdateTimerBars()
+    local currentTime = GetTime()
+    local needsRepositioning = false
+
+    for playerName, timer in pairs(activeTimers) do
+        if timer.paused then
+            -- Update the start time while paused to maintain the correct remaining time
+            timer.startTime = currentTime - (timer.duration - timer.bar:GetValue())
+            local className = CLASS_NAMES[timer.class] or timer.class
+            timer.bar:SetValue(timer.duration)
+            timer.text:SetText(string.format("%s (%d %s): %d",
+                timer.playerName,
+                timer.level,
+                className,
+                timer.duration))
+        else
+            local elapsed = currentTime - timer.startTime
+            local remaining = timer.duration - elapsed
+
+            if remaining <= 0 then
+                timer.frame:Hide()
+                activeTimers[playerName] = nil
+                needsRepositioning = true
+
+                if IsInGroup() then
+                    local className = CLASS_NAMES[timer.class] or timer.class
+                    -- SendChatMessage(string.format("%s (%d %s) can now resurrect!",
+                    --     timer.playerName, timer.level, className), "PARTY")
+                end
+            else
+                timer.bar:SetValue(remaining)
+                local className = CLASS_NAMES[timer.class] or timer.class
+                timer.text:SetText(string.format("%s (%d %s): %d",
+                    timer.playerName,
+                    (timer.level == -1) and "??" or timer.level,
+                    className,
+                    math.ceil(remaining)))
+            end
+        end
+    end
+
+    if needsRepositioning then
+        UpdateTimerBarPositions()
+    end
+end
+
+local function SimulatePlayerDeath(args)
+    local testLevel = 60
+    local testX, testY
+
+    -- Parse arguments: level x y or just x y
+    local arg1, arg2, arg3 = strsplit(" ", args or "")
+    if arg3 then
+        testLevel = tonumber(arg1) or 60
+        testX = tonumber(arg2)
+        testY = tonumber(arg3)
+    elseif arg2 then
+        testX = tonumber(arg1)
+        testY = tonumber(arg2)
+    end
+
+    local mapID = C_Map.GetBestMapForUnit("player")
+    if not mapID then
+        print("Error: Could not determine current map")
+        return
+    end
+
+    local zoneText = C_Map.GetMapInfo(mapID).name
+    if not ZoneData[zoneText] then
+        print("Error: Current zone '" .. zoneText .. "' is not supported")
+        return
+    end
+
+    local x, y
+    if testX and testY then
+        x, y = testX, testY
+    else
+        local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+        if not pos then
+            print("Error: Could not determine player position")
+            return
+        end
+        x = pos.x * 100
+        y = pos.y * 100
+    end
+
+    -- Print debug info
+    print("Test data:")
+    print("- Zone: " .. zoneText)
+    print("- Position: " .. string.format("%.1f, %.1f", x, y))
+
+    -- Check if position is in a restricted area
+    local path = GetPathForLocation(zoneText, x, y)
+    print("- Path calculation: " .. (path and "Using waypoint path" or "Using direct path"))
+
+    -- Calculate distances to all graveyards in the zone
+    local zone = ZoneData[zoneText]
+    print("\nAvailable graveyards:")
+    for i, gy in ipairs(zone.graveyards) do
+        local dist = CalculateYardDistanceBetweenCoordinates(zoneText, x, y, gy.x, gy.y)
+        if dist then
+            print(string.format("  %d. Coordinates: %.1f, %.1f - Direct distance: %.1f yards",
+                i, gy.x, gy.y, dist))
+        end
+    end
+
+    -- Get nearest graveyard and calculate run time
+    local distance = GetDistanceToNearestGraveyard(zoneText, x, y)
+    if distance then
+        print(string.format("\nSimulation results:"))
+        testPlayerNumber = math.random(1, 100)
+        testClassNumber = math.random(1, 9)
+        if testClassNumber == 1 then
+            testClass = "WARRIOR"
+        elseif testClassNumber == 2 then
+            testClass = "ROGUE"
+        elseif testClassNumber == 3 then
+            testClass = "PRIEST"
+        elseif testClassNumber == 4 then
+            testClass = "DRUID"
+        elseif testClassNumber == 5 then
+            testClass = "MAGE"
+        elseif testClassNumber == 6 then
+            testClass = "WARLOCK"
+        elseif testClassNumber == 7 then
+            testClass = "HUNTER"
+        elseif testClassNumber == 8 then
+            testClass = "PALADIN"
+        elseif testClassNumber == 9 then
+            testClass = "SHAMAN"
+        end
+        local isNightElf = false
+        local runTime = CalculateReturnTime(distance, isNightElf)
+        print(string.format("- Is Night Elf: %s", isNightElf and "Yes" or "No"))
+        print(string.format("- Speed modifier: %.2fx", isNightElf and WISP_SPIRIT_MODIFIER or GHOST_SPEED_MODIFIER))
+        print(string.format("- Actual path distance: %.1f yards", distance))
+        print(string.format("- Minimum return time: %d seconds", runTime))
+        CreateTimerBar("Playername" .. testPlayerNumber, runTime, testLevel, testClass)
+    end
+end
+
+local function StorePlayerInfo(unit)
+    if UnitIsPlayer(unit) then
+        local name = UnitName(unit)
+        local _, class = UnitClass(unit)
+        local level = UnitLevel(unit)
+        local _, race = UnitRace(unit)
+
+        if not knownPlayers[name] then
+            knownPlayers[name] = {}
+        end
+
+        knownPlayers[name].level = level -- Treat "??" as very high level
+        knownPlayers[name].class = class
+        knownPlayers[name].race = race
+        -- DEFAULT_CHAT_FRAME:AddMessage("Stored player info: " .. name .. ", race: " .. knownPlayers[name].race .. " class: " .. knownPlayers[name].class .. ", level: " .. knownPlayers[name].level)
+    end
+end
+
+local function OnEvent(self, event, ...)
+    if event == "COMBAT_LOG_EVENT_UNFILTERED" then
+        local _, subEvent, _, _, _, _, _, destGUID, unitName, destFlags = CombatLogGetCurrentEventInfo()
+
+        if subEvent == "UNIT_DIED" and bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) ~= 0 then
+            if bit.band(destFlags, COMBATLOG_OBJECT_REACTION_HOSTILE) ~= 0 then
+                local _, class, _, _, _, _ = GetPlayerInfoByGUID(destGUID)
+
+                local mapID = C_Map.GetBestMapForUnit("player")
+                if not mapID then return end
+
+                local zoneText = C_Map.GetMapInfo(mapID).name
+                local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+                if not pos then return end
+
+                local distance = GetDistanceToNearestGraveyard(zoneText, pos.x * 100, pos.y * 100)
+                if not distance then return end
+
+                local isNightElf = knownPlayers[unitName] and knownPlayers[unitName].race == "NightElf"
+                local runTime = CalculateReturnTime(distance, isNightElf)
+                if class then
+                    CreateTimerBar(unitName, runTime, knownPlayers[unitName].level, class, false)
+                end
+            end
+        end
+    elseif event == "UPDATE_MOUSEOVER_UNIT" then
+        StorePlayerInfo("mouseover")
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        StorePlayerInfo("target")
+
+        -- Handle target change for existing timers
+        local targetName = UnitName("target")
+        if targetName and activeTimers[targetName] then
+            -- Reuse existing timer duration and just pause it
+            local timer = activeTimers[targetName]
+            timer.remaining = timer.duration
+            timer.paused = true
+        end
+
+        -- Unpause any timers for players that are no longer targeted
+        for playerName, timer in pairs(activeTimers) do
+            if playerName ~= targetName and timer.paused then
+                timer.paused = false
+                timer.startTime = GetTime()
+            end
+        end
+    end
+end
+
+
+local addonFrame = CreateFrame("Frame")
+addonFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+addonFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+addonFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+addonFrame:SetScript("OnEvent", OnEvent)
+
+local updateFrame = CreateFrame("Frame")
+updateFrame:SetScript("OnUpdate", UpdateTimerBars)
+
+SLASH_CORPSERUNTIMERS1 = "/crt"
+SlashCmdList["CORPSERUNTIMERS"] = function(msg)
+    SimulatePlayerDeath(msg)
+end
