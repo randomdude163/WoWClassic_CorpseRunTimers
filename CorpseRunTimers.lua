@@ -1,11 +1,12 @@
+local timerBarsFrame = CreateFrame("Frame", "CorpseRunTimersBarsAnchor", UIParent)
+local addonFrame = CreateFrame("Frame")
+local updateFrame = CreateFrame("Frame")
+
 local knownPlayers = {}
 local activeTimers = {}
 local timerBarHeight = 15
 local timerBarWidth = 190
-local maxBars = 5
 local barSpacing = 2
-
-local timerAnchor = nil -- Will store the main anchor frame for all timer bars
 
 
 local function ConvertMapCoordsToYards(zoneText, x, y)
@@ -92,56 +93,31 @@ local function CalculateReturnTime(distance, isNightElf)
     local effectiveDistance = math.max(0, distance - CORPSE_RESURRECTION_RANGE)
     local speedModifier = isNightElf and WISP_SPIRIT_MODIFIER or GHOST_SPEED_MODIFIER
     local returnTime = math.ceil(effectiveDistance / (BASE_RUNNING_SPEED * speedModifier))
-    local delayForReleasingSpirit = 1.5  -- seconds
+    local delayForReleasingSpirit = 1.5 -- seconds
     return returnTime + delayForReleasingSpirit
 end
 
-local function CreateTimerAnchor()
-    if timerAnchor then return end
-
-    timerAnchor = CreateFrame("Frame", "CorpseRunTimersBarsAnchor", UIParent)
-    timerAnchor:SetSize(200, 20)
-    timerAnchor:SetPoint("TOP", UIParent, "TOP", 0, -200)
-    timerAnchor:EnableMouse(true)
-    timerAnchor:SetMovable(true)
-    timerAnchor:RegisterForDrag("LeftButton")
-
-    -- Add a background to make it visible while moving
-    local bg = timerAnchor:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints(true)
-    bg:SetColorTexture(0.2, 0.2, 0.2, 0.5)
-    timerAnchor.bg = bg
-
-    -- Single set of drag handlers
-    timerAnchor:SetScript("OnDragStart", function(self)
-        if IsShiftKeyDown() then
-            self.bg:Show()
-            self:StartMoving()
-        end
-    end)
-
-    timerAnchor:SetScript("OnDragStop", function(self)
-        self.bg:Hide()
-        self:StopMovingOrSizing()
-    end)
-
-    bg:Hide()
+local function InitTimerBarsFrame()
+    timerBarsFrame:SetSize(timerBarWidth, timerBarHeight)
+    timerBarsFrame:SetPoint("CENTER")
+    timerBarsFrame:EnableMouse(true)
+    timerBarsFrame:SetMovable(true)
+    timerBarsFrame:RegisterForDrag("LeftButton")
+    timerBarsFrame:SetScript("OnDragStart", timerBarsFrame.StartMoving)
+    timerBarsFrame:SetScript("OnDragStop", timerBarsFrame.StopMovingOrSizing)
+    timerBarsFrame:Show()
 end
 
 local function UpdateTimerBarPositions()
     local index = 0
     for _, timer in pairs(activeTimers) do
         timer.frame:ClearAllPoints()
-        timer.frame:SetPoint("TOP", timerAnchor, "BOTTOM", 0, -(index * (timerBarHeight + barSpacing)))
+        timer.frame:SetPoint("TOP", timerBarsFrame, "TOP", 0, -(index * (timerBarHeight + barSpacing)))
         index = index + 1
     end
 end
 
 local function CreateTimerBar(playerName, duration, level, class, shouldPause)
-    if not timerAnchor then
-        CreateTimerAnchor()
-    end
-
     -- If timer already exists, update its duration and pause state
     if activeTimers[playerName] then
         local timer = activeTimers[playerName]
@@ -153,7 +129,7 @@ local function CreateTimerBar(playerName, duration, level, class, shouldPause)
         return timer
     end
 
-    local frame = CreateFrame("Frame", nil, timerAnchor)
+    local frame = CreateFrame("Frame", nil, timerBarsFrame)
     frame:SetSize(timerBarWidth, timerBarHeight)
 
     local bar = CreateFrame("StatusBar", nil, frame)
@@ -196,40 +172,28 @@ local function UpdateTimerBars()
     local needsRepositioning = false
 
     for playerName, timer in pairs(activeTimers) do
+        local remaining = nil
         if timer.paused then
-            -- Update the start time while paused to maintain the correct remaining time
-            timer.startTime = currentTime - (timer.duration - timer.bar:GetValue())
-            local className = CLASS_NAMES[timer.class] or timer.class
             timer.bar:SetValue(timer.duration)
-            timer.text:SetText(string.format("%s (%d %s): %d",
-                timer.playerName,
-                timer.level,
-                className,
-                timer.duration))
+            remaining = timer.duration
         else
             local elapsed = currentTime - timer.startTime
-            local remaining = timer.duration - elapsed
+            remaining = timer.duration - elapsed
 
             if remaining <= 0 then
                 timer.frame:Hide()
                 activeTimers[playerName] = nil
                 needsRepositioning = true
-
-                if IsInGroup() then
-                    local className = CLASS_NAMES[timer.class] or timer.class
-                    -- SendChatMessage(string.format("%s (%d %s) can now resurrect!",
-                    --     timer.playerName, timer.level, className), "PARTY")
-                end
             else
                 timer.bar:SetValue(remaining)
-                local className = CLASS_NAMES[timer.class] or timer.class
-                timer.text:SetText(string.format("%s (%d %s): %d",
-                    timer.playerName,
-                    (timer.level == -1) and "??" or timer.level,
-                    className,
-                    math.ceil(remaining)))
             end
         end
+        local className = CLASS_NAMES[timer.class] or timer.class
+        timer.text:SetText(string.format("%s (%d %s): %d",
+            timer.playerName,
+            (timer.level == -1) and "??" or timer.level,
+            className,
+            math.ceil(remaining)))
     end
 
     if needsRepositioning then
@@ -238,7 +202,7 @@ local function UpdateTimerBars()
 end
 
 local function SimulatePlayerDeath(args)
-    local testLevel = 60
+    local testLevel = math.random(10, 60)
     local testX, testY
 
     -- Parse arguments: level x y or just x y
@@ -253,14 +217,9 @@ local function SimulatePlayerDeath(args)
     end
 
     local mapID = C_Map.GetBestMapForUnit("player")
-    if not mapID then
-        print("Error: Could not determine current map")
-        return
-    end
-
     local zoneText = C_Map.GetMapInfo(mapID).name
     if not ZoneData[zoneText] then
-        print("Error: Current zone '" .. zoneText .. "' is not supported")
+        print("[CorpseRunTimers]: Error - Current zone '" .. zoneText .. "' is not supported")
         return
     end
 
@@ -269,24 +228,17 @@ local function SimulatePlayerDeath(args)
         x, y = testX, testY
     else
         local pos = C_Map.GetPlayerMapPosition(mapID, "player")
-        if not pos then
-            print("Error: Could not determine player position")
-            return
-        end
         x = pos.x * 100
         y = pos.y * 100
     end
 
-    -- Print debug info
     print("Test data:")
     print("- Zone: " .. zoneText)
     print("- Position: " .. string.format("%.1f, %.1f", x, y))
 
-    -- Check if position is in a restricted area
     local path = GetPathForLocation(zoneText, x, y)
     print("- Path calculation: " .. (path and "Using waypoint path" or "Using direct path"))
 
-    -- Calculate distances to all graveyards in the zone
     local zone = ZoneData[zoneText]
     print("\nAvailable graveyards:")
     for i, gy in ipairs(zone.graveyards) do
@@ -297,11 +249,10 @@ local function SimulatePlayerDeath(args)
         end
     end
 
-    -- Get nearest graveyard and calculate run time
     local distance = GetDistanceToNearestGraveyard(zoneText, x, y)
     if distance then
         print(string.format("\nSimulation results:"))
-        testPlayerNumber = math.random(1, 100)
+        testPlayerNumber = math.random(1, 10)
         testClassNumber = math.random(1, 9)
         if testClassNumber == 1 then
             testClass = "WARRIOR"
@@ -328,7 +279,7 @@ local function SimulatePlayerDeath(args)
         print(string.format("- Speed modifier: %.2fx", isNightElf and WISP_SPIRIT_MODIFIER or GHOST_SPEED_MODIFIER))
         print(string.format("- Actual path distance: %.1f yards", distance))
         print(string.format("- Minimum return time: %d seconds", runTime))
-        CreateTimerBar("Playername" .. testPlayerNumber, runTime, testLevel, testClass)
+        CreateTimerBar("Player" .. testPlayerNumber, runTime, testLevel, testClass)
     end
 end
 
@@ -350,66 +301,94 @@ local function StorePlayerInfo(unit)
     end
 end
 
-local function OnEvent(self, event, ...)
-    if event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        local _, subEvent, _, _, _, _, _, destGUID, unitName, destFlags = CombatLogGetCurrentEventInfo()
+local function HandleUnitDiedEvent(destGUID, unitName)
+    local _, class, _, _, _, _ = GetPlayerInfoByGUID(destGUID)
 
-        if subEvent == "UNIT_DIED" and bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) ~= 0 then
-            if bit.band(destFlags, COMBATLOG_OBJECT_REACTION_HOSTILE) ~= 0 then
-                local _, class, _, _, _, _ = GetPlayerInfoByGUID(destGUID)
+    local mapID = C_Map.GetBestMapForUnit("player")
+    if not mapID then return end
 
-                local mapID = C_Map.GetBestMapForUnit("player")
-                if not mapID then return end
+    local zoneText = C_Map.GetMapInfo(mapID).name
+    local pos = C_Map.GetPlayerMapPosition(mapID, "player")
+    if not pos then return end
 
-                local zoneText = C_Map.GetMapInfo(mapID).name
-                local pos = C_Map.GetPlayerMapPosition(mapID, "player")
-                if not pos then return end
+    local distance = GetDistanceToNearestGraveyard(zoneText, pos.x * 100, pos.y * 100)
+    if not distance then return end
 
-                local distance = GetDistanceToNearestGraveyard(zoneText, pos.x * 100, pos.y * 100)
-                if not distance then return end
-
-                local isNightElf = knownPlayers[unitName] and knownPlayers[unitName].race == "NightElf"
-                local runTime = CalculateReturnTime(distance, isNightElf)
-                if class then
-                    CreateTimerBar(unitName, runTime, knownPlayers[unitName].level, class, false)
-                end
-            end
+    local isNightElf = knownPlayers[unitName] and knownPlayers[unitName].race == "NightElf"
+    local runTime = CalculateReturnTime(distance, isNightElf)
+    if class then
+        local level = -1
+        if knownPlayers[unitName] and knownPlayers[unitName].level then
+            level = knownPlayers[unitName].level
         end
-    elseif event == "UPDATE_MOUSEOVER_UNIT" then
-        StorePlayerInfo("mouseover")
-    elseif event == "PLAYER_TARGET_CHANGED" then
-        StorePlayerInfo("target")
+        CreateTimerBar(unitName, runTime, level, class, false)
+    end
+end
 
-        -- Handle target change for existing timers
-        local targetName = UnitName("target")
-        if targetName and activeTimers[targetName] then
-            -- Reuse existing timer duration and just pause it
-            local timer = activeTimers[targetName]
-            timer.remaining = timer.duration
-            timer.paused = true
-        end
+local function PauseTimerForTargetIfExists(targetName)
+    if targetName and activeTimers[targetName] then
+        local timer = activeTimers[targetName]
+        timer.remaining = timer.duration
+        timer.paused = true
+    end
+end
 
-        -- Unpause any timers for players that are no longer targeted
-        for playerName, timer in pairs(activeTimers) do
-            if playerName ~= targetName and timer.paused then
-                timer.paused = false
-                timer.startTime = GetTime()
-            end
+local function UnpauseTimerForPlayerNotInTargetAnymore(targetName)
+    for playerName, timer in pairs(activeTimers) do
+        if playerName ~= targetName and timer.paused then
+            timer.paused = false
+            timer.startTime = GetTime()
         end
     end
 end
 
-
-local addonFrame = CreateFrame("Frame")
-addonFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-addonFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
-addonFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
-addonFrame:SetScript("OnEvent", OnEvent)
-
-local updateFrame = CreateFrame("Frame")
-updateFrame:SetScript("OnUpdate", UpdateTimerBars)
-
-SLASH_CORPSERUNTIMERS1 = "/crt"
-SlashCmdList["CORPSERUNTIMERS"] = function(msg)
-    SimulatePlayerDeath(msg)
+local function HandleTargetChangedEvent()
+    local targetName = UnitName("target")
+    PauseTimerForTargetIfExists(targetName)
+    UnpauseTimerForPlayerNotInTargetAnymore(targetName)
 end
+
+local function HandleCombatLogEvent()
+    local _, subEvent, _, _, _, _, _, destGUID, unitName, destFlags = CombatLogGetCurrentEventInfo()
+
+    if subEvent == "UNIT_DIED" and bit.band(destFlags, COMBATLOG_OBJECT_TYPE_PLAYER) ~= 0 then
+        if bit.band(destFlags, COMBATLOG_OBJECT_REACTION_HOSTILE) ~= 0 then
+            HandleUnitDiedEvent(destGUID, unitName)
+        end
+    end
+end
+
+local function OnEvent(self, event, ...)
+    if event == "COMBAT_LOG_EVENT_UNFILTERED" then
+        HandleCombatLogEvent()
+    elseif event == "UPDATE_MOUSEOVER_UNIT" then
+        StorePlayerInfo("mouseover")
+    elseif event == "PLAYER_TARGET_CHANGED" then
+        StorePlayerInfo("target")
+        HandleTargetChangedEvent()
+    end
+end
+
+
+function RegisterEvents()
+    addonFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+    addonFrame:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
+    addonFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
+    addonFrame:SetScript("OnEvent", OnEvent)
+    updateFrame:SetScript("OnUpdate", UpdateTimerBars)
+end
+
+function RegisterSlashCommands()
+    SLASH_CORPSERUNTIMERS1 = "/crt"
+    SlashCmdList["CORPSERUNTIMERS"] = function(msg)
+        SimulatePlayerDeath(msg)
+    end
+end
+
+function Main()
+    RegisterEvents()
+    RegisterSlashCommands()
+    InitTimerBarsFrame()
+end
+
+Main()
