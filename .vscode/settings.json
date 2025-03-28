@@ -16,6 +16,7 @@
     ],
     "Lua.diagnostics.globals": [
         "SlashCmdList",
-        "CLASS_COLORS"
+        "CLASS_COLORS",
+        "DEFAULT_CHAT_FRAME"
     ]
 }

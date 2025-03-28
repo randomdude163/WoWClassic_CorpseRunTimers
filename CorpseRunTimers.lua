@@ -189,9 +189,10 @@ local function UpdateTimerBars()
             end
         end
         local className = CLASS_NAMES[timer.class] or timer.class
-        timer.text:SetText(string.format("%s (%d %s): %d",
+        local levelText = (timer.level == -1) and "??" or tostring(timer.level)
+        timer.text:SetText(string.format("%s (%s %s): %d",
             timer.playerName,
-            (timer.level == -1) and "??" or timer.level,
+            levelText,
             className,
             math.ceil(remaining)))
     end
@@ -203,6 +204,7 @@ end
 
 local function SimulatePlayerDeath(args)
     local testLevel = math.random(10, 60)
+    -- testLevel = -1
     local testX, testY
 
     -- Parse arguments: level x y or just x y
