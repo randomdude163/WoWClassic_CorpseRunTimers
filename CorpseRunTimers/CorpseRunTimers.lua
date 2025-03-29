@@ -9,17 +9,17 @@ local timerBarWidth = 190
 local barSpacing = 2
 
 
-local function ConvertMapCoordsToYards(zoneText, x, y)
-    local zone = ZoneData[zoneText]
-    if not zone then return nil end
-    local yardsX = (x / 100) * zone.width
-    local yardsY = (y / 100) * zone.height
+local function ConvertMapCoordsToYards(mapID, x, y)
+    local zoneInfo = CRT_ZoneData[mapID]
+    if not zoneInfo then return nil end
+    local yardsX = (x / 100) * zoneInfo.width
+    local yardsY = (y / 100) * zoneInfo.height
     return yardsX, yardsY
 end
 
-local function CalculateYardDistanceBetweenCoordinates(zoneText, x1, y1, x2, y2)
-    local yards1X, yards1Y = ConvertMapCoordsToYards(zoneText, x1, y1)
-    local yards2X, yards2Y = ConvertMapCoordsToYards(zoneText, x2, y2)
+local function CalculateYardDistanceBetweenCoordinates(mapID, x1, y1, x2, y2)
+    local yards1X, yards1Y = ConvertMapCoordsToYards(mapID, x1, y1)
+    local yards2X, yards2Y = ConvertMapCoordsToYards(mapID, x2, y2)
     if not yards1X or not yards2X then return nil end
     return math.sqrt((yards2X - yards1X) ^ 2 + (yards2Y - yards1Y) ^ 2)
 end
@@ -40,8 +40,8 @@ local function IsPointInPolygon(point, polygon)
     return inside
 end
 
-local function GetPathForLocation(zoneText, x, y)
-    local zone = WaypointPathData[zoneText]
+local function GetPathForLocation(mapID, x, y)
+    local zone = CRT_WaypointPathDataPerZone[mapID]
     if not zone then return nil end
 
     local point = { x = x, y = y }
@@ -53,10 +53,10 @@ local function GetPathForLocation(zoneText, x, y)
     return nil
 end
 
-local function CalculatePathDistance(zoneText, startX, startY, endX, endY)
-    local path = GetPathForLocation(zoneText, startX, startY)
+local function CalculatePathDistance(mapID, startX, startY, endX, endY)
+    local path = GetPathForLocation(mapID, startX, startY)
     if not path then
-        return CalculateYardDistanceBetweenCoordinates(zoneText, startX, startY, endX, endY)
+        return CalculateYardDistanceBetweenCoordinates(mapID, startX, startY, endX, endY)
     end
 
     local totalDistance = 0
@@ -64,23 +64,23 @@ local function CalculatePathDistance(zoneText, startX, startY, endX, endY)
 
     -- First waypoint is path to restricted area
     for _, wp in ipairs(path) do
-        totalDistance = totalDistance + CalculateYardDistanceBetweenCoordinates(zoneText, lastX, lastY, wp.x, wp.y)
+        totalDistance = totalDistance + CalculateYardDistanceBetweenCoordinates(mapID, lastX, lastY, wp.x, wp.y)
         lastX, lastY = wp.x, wp.y
     end
 
     -- Add final distance from last waypoint to death location
-    totalDistance = totalDistance + CalculateYardDistanceBetweenCoordinates(zoneText, lastX, lastY, startX, startY)
+    totalDistance = totalDistance + CalculateYardDistanceBetweenCoordinates(mapID, lastX, lastY, startX, startY)
     return totalDistance
 end
 
-local function GetDistanceToNearestGraveyard(zoneText, deathX, deathY)
-    local zone = ZoneData[zoneText]
+local function GetDistanceToNearestGraveyard(mapId, deathX, deathY)
+    local zone = CRT_ZoneData[mapId]
     if not zone then return nil end
 
     local nearestDist = math.huge
 
     for _, gy in ipairs(zone.graveyards) do
-        local dist = CalculatePathDistance(zoneText, deathX, deathY, gy.x, gy.y)
+        local dist = CalculatePathDistance(mapId, deathX, deathY, gy.x, gy.y)
         if dist and dist < nearestDist then
             nearestDist = dist
         end
@@ -90,9 +90,9 @@ local function GetDistanceToNearestGraveyard(zoneText, deathX, deathY)
 end
 
 local function CalculateReturnTime(distance, isNightElf)
-    local effectiveDistance = math.max(0, distance - CORPSE_RESURRECTION_RANGE)
-    local speedModifier = isNightElf and WISP_SPIRIT_MODIFIER or GHOST_SPEED_MODIFIER
-    local returnTime = math.ceil(effectiveDistance / (BASE_RUNNING_SPEED * speedModifier))
+    local effectiveDistance = math.max(0, distance - CRT_CORPSE_RESURRECTION_RANGE)
+    local speedModifier = isNightElf and CRT_WISP_SPIRIT_MODIFIER or CRT_GHOST_SPEED_MODIFIER
+    local returnTime = math.ceil(effectiveDistance / (CRT_BASE_RUNNING_SPEED * speedModifier))
     local delayForReleasingSpirit = 1.5 -- seconds
     return returnTime + delayForReleasingSpirit
 end
@@ -188,7 +188,7 @@ local function UpdateTimerBars()
                 timer.bar:SetValue(remaining)
             end
         end
-        local className = CLASS_NAMES[timer.class] or timer.class
+        local className = CRT_CLASS_NAMES[timer.class] or timer.class
         local levelText = (timer.level == -1) and "??" or tostring(timer.level)
         timer.text:SetText(string.format("%s (%s %s): %d",
             timer.playerName,
@@ -220,8 +220,8 @@ local function SimulatePlayerDeath(args)
 
     local mapID = C_Map.GetBestMapForUnit("player")
     local zoneText = C_Map.GetMapInfo(mapID).name
-    if not ZoneData[zoneText] then
-        print("[CorpseRunTimers]: Error - Current zone '" .. zoneText .. "' is not supported")
+    if not CRT_ZoneData[mapID] then
+        print("[CorpseRunTimers]: Error - Current zone '" .. zoneText .. "' ".. "(" .. mapID .. ")" .. " is not supported")
         return
     end
 
@@ -235,23 +235,23 @@ local function SimulatePlayerDeath(args)
     end
 
     print("Test data:")
-    print("- Zone: " .. zoneText)
+    print("- Zone: " .. zoneText .. "(" .. mapID .. ")")
     print("- Position: " .. string.format("%.1f, %.1f", x, y))
 
     local path = GetPathForLocation(zoneText, x, y)
     print("- Path calculation: " .. (path and "Using waypoint path" or "Using direct path"))
 
-    local zone = ZoneData[zoneText]
+    local zoneInfo = CRT_ZoneData[mapID]
     print("\nAvailable graveyards:")
-    for i, gy in ipairs(zone.graveyards) do
-        local dist = CalculateYardDistanceBetweenCoordinates(zoneText, x, y, gy.x, gy.y)
+    for i, gy in ipairs(zoneInfo.graveyards) do
+        local dist = CalculateYardDistanceBetweenCoordinates(mapID, x, y, gy.x, gy.y)
         if dist then
             print(string.format("  %d. Coordinates: %.1f, %.1f - Direct distance: %.1f yards",
                 i, gy.x, gy.y, dist))
         end
     end
 
-    local distance = GetDistanceToNearestGraveyard(zoneText, x, y)
+    local distance = GetDistanceToNearestGraveyard(mapID, x, y)
     if distance then
         print(string.format("\nSimulation results:"))
         testPlayerNumber = math.random(1, 10)
@@ -278,7 +278,7 @@ local function SimulatePlayerDeath(args)
         local isNightElf = false
         local runTime = CalculateReturnTime(distance, isNightElf)
         print(string.format("- Is Night Elf: %s", isNightElf and "Yes" or "No"))
-        print(string.format("- Speed modifier: %.2fx", isNightElf and WISP_SPIRIT_MODIFIER or GHOST_SPEED_MODIFIER))
+        print(string.format("- Speed modifier: %.2fx", isNightElf and CRT_WISP_SPIRIT_MODIFIER or CRT_GHOST_SPEED_MODIFIER))
         print(string.format("- Actual path distance: %.1f yards", distance))
         print(string.format("- Minimum return time: %d seconds", runTime))
         CreateTimerBar("Player" .. testPlayerNumber, runTime, testLevel, testClass)
@@ -313,7 +313,7 @@ local function HandleUnitDiedEvent(destGUID, unitName)
     local pos = C_Map.GetPlayerMapPosition(mapID, "player")
     if not pos then return end
 
-    local distance = GetDistanceToNearestGraveyard(zoneText, pos.x * 100, pos.y * 100)
+    local distance = GetDistanceToNearestGraveyard(mapID, pos.x * 100, pos.y * 100)
     if not distance then return end
 
     local isNightElf = knownPlayers[unitName] and knownPlayers[unitName].race == "NightElf"
