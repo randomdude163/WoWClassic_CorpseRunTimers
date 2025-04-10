@@ -1,4 +1,4 @@
-## Interface: 11505
+## Interface: 11507
 ## Title: Corpse Run Timers
 ## Notes: Shows timers for corpse runs of players
 ## Author: Severussnipe
