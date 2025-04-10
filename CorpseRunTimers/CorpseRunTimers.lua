@@ -9,6 +9,36 @@ local timerBarWidth = 190
 local barSpacing = 2
 
 
+local function IsInBattleground()
+    local currentMapId = C_Map.GetBestMapForUnit("player")
+
+    local battlegroundZoneIds = {
+        91, -- Alterac Valley
+        1459, -- "Alterac Valley"
+        1537,
+
+        92, -- "Warsong Gulch"
+        859, -- "Warsong Gulch"
+        1339, -- "Warsong Gulch"
+        1460, -- "Warsong Gulch"
+
+        93, -- "Arathi Basin"
+        837, -- "Arathi Basin"
+        844, -- "Arathi Basin"
+        1366, -- "Arathi Basin",
+        1383, -- "Arathi Basin"
+        1461, -- "Arathi Basin"
+    }
+
+    for _, bgMapId in ipairs(battlegroundZoneIds) do
+        if (currentMapId == bgMapId) then
+            return true
+        end
+    end
+
+    return false
+end
+
 local function ConvertMapCoordsToYards(mapID, x, y)
     local zoneInfo = CRT_ZoneData[mapID]
     if not zoneInfo then return nil end
@@ -304,6 +334,11 @@ local function StorePlayerInfo(unit)
 end
 
 local function HandleUnitDiedEvent(destGUID, unitName)
+    if IsInBattleground() then
+        -- Don't show timers in battlegrounds
+        return
+    end
+
     local _, class, _, _, _, _ = GetPlayerInfoByGUID(destGUID)
 
     local mapID = C_Map.GetBestMapForUnit("player")
